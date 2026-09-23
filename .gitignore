@@ -1,0 +1,20 @@
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# Rust
+target/
+
+# Local agent entry point (loads AGENTS.md)
+CLAUDE.md
+
+# Editors and operating systems
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.beads.gate.lock
+.beads/hooks/
