@@ -7,7 +7,7 @@
 //! Academy Software Foundation. This crate implements its
 //! [parameter reference] for version [`SPEC_VERSION`]:
 //!
-//! - [`Parameters`]: one constant value for every non-geometric parameter,
+//! - [`Parameters`]: 37 constant inputs,
 //!   with the specification's defaults ([`Parameters::DEFAULT`]), range
 //!   validation, dynamic access by [`Param`], and color-space conversion.
 //! - [`Param`] and [`ParamInfo`]: every parameter, including the `vector3`
@@ -15,9 +15,29 @@
 //!   and typical ranges, default, unit, and whether it is a color. Tools that
 //!   pack parameters into textures or build editors iterate [`Param::ALL`].
 //!
+//! The four `vector3` geometry inputs (`geometry_normal`, `geometry_tangent`,
+//! `geometry_coat_normal`, and `geometry_coat_tangent`) have metadata but are
+//! not stored in [`Parameters`]. The renderer or adapter supplies them.
+//!
 //! It evaluates no BSDF and knows no file format: renderers, texture
 //! generators and exporters share the vocabulary and bring their own
 //! evaluation. Mapping to glTF PBR is lossy and belongs in an adapter crate.
+//!
+//! # Installation
+//!
+//! ```toml
+//! [dependencies]
+//! openpbr = "0.1.0"
+//! ```
+//!
+//! For `no_std` targets, disable the default `std` feature and enable `libm`:
+//!
+//! ```toml
+//! [dependencies]
+//! openpbr = { version = "0.1.0", default-features = false, features = ["libm"] }
+//! ```
+//!
+//! Add the `serde` feature when serialization is needed.
 //!
 //! # Color spaces
 //!
@@ -94,8 +114,8 @@
 //!   identifier. Missing fields take their defaults; unknown fields are an
 //!   error.
 //!
-//! [OpenPBR Surface]: https://academysoftwarefoundation.github.io/OpenPBR/
-//! [parameter reference]: https://academysoftwarefoundation.github.io/OpenPBR/#parameterreference
+//! [OpenPBR Surface]: https://github.com/AcademySoftwareFoundation/OpenPBR/tree/v1.1.1
+//! [parameter reference]: https://github.com/AcademySoftwareFoundation/OpenPBR/blob/f8d6d947dfae4c9b599965a86c22826ea7a8dbfb/parametrization.md.html
 
 #![no_std]
 
@@ -121,4 +141,9 @@ pub use parameters::{Parameters, SetError, ValidationError};
 pub(crate) use serde_impl::color as serde_color;
 
 /// The OpenPBR specification version this crate implements.
+///
+/// Metadata follows the [parameter reference] at upstream revision
+/// `f8d6d947dfae4c9b599965a86c22826ea7a8dbfb`, tagged `v1.1.1`.
+///
+/// [parameter reference]: https://github.com/AcademySoftwareFoundation/OpenPBR/blob/f8d6d947dfae4c9b599965a86c22826ea7a8dbfb/parametrization.md.html
 pub const SPEC_VERSION: &str = "1.1.1";

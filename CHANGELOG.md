@@ -10,6 +10,8 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
 This release has an [MSRV][] of 1.88.
 
 ### Added
@@ -23,3 +25,5 @@ This release has an [MSRV][] of 1.88.
 - `std`, `libm`, and `serde` features.
 
 [MSRV]: crates/openpbr/README.md#minimum-supported-rust-version-msrv
+[Unreleased]: https://github.com/forest-rs/openpbr/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/forest-rs/openpbr/releases/tag/v0.1.0
