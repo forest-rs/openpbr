@@ -25,8 +25,9 @@
 //! the type level. [`Parameters`] defaults to [`color::AcesCg`], the space
 //! OpenPBR assumes when a material names none; a renderer working in linear
 //! Rec. 709 uses `Parameters<LinearSrgb>`, and [`Parameters::convert`] moves
-//! between them. Only linear spaces are accepted. The [`color`] crate is
-//! re-exported so the versions match.
+//! between them. [`LinearRgb`] restricts parameters to linear RGB spaces;
+//! encoded RGB and XYZ are excluded. The [`color`] crate is re-exported so
+//! the versions match.
 //!
 //! ```
 //! use openpbr::color::{AcesCg, LinearSrgb, OpaqueColor};
@@ -52,6 +53,37 @@
 //! assert!(!info.range.unwrap().contains(0.0));
 //! ```
 //!
+//! # Validation and extended RGB
+//!
+//! [`Parameters::validate`] requires every numeric component to be finite.
+//! Scalars and non-color triples also obey their specification ranges.
+//! Chromatic colors may have negative components or components above one:
+//! these coordinates can result from conversion between RGB gamuts.
+//! [`Parameters::validate_spec_ranges`] additionally checks color components
+//! against the specification bounds in the current RGB space. Neither check
+//! enforces typical ("norm") ranges or guarantees renderer support.
+//!
+//! ```
+//! use openpbr::{Parameters, color::{AcesCg, LinearSrgb, OpaqueColor}};
+//!
+//! let red = Parameters::<AcesCg> {
+//!     base_color: OpaqueColor::new([1.0, 0.0, 0.0]),
+//!     ..Parameters::DEFAULT
+//! };
+//! assert_eq!(red.validate_spec_ranges(), Ok(()));
+//! let converted: Parameters<LinearSrgb> = red.convert();
+//! assert!(converted.base_color.components[0] > 1.0);
+//! assert!(converted.base_color.components[1] < 0.0);
+//! assert_eq!(converted.validate(), Ok(()));
+//! assert!(converted.validate_spec_ranges().is_err());
+//! ```
+//!
+//! Conversion preserves extended coordinates without clipping or gamut
+//! mapping. The caller owns any gamut policy needed before shading. Public
+//! fields, [`Parameters::set`], and deserialization are unchecked; validate
+//! before use. Serde payloads carry no color-space identifier, specification
+//! version, or scene-unit scale; the containing format supplies that context.
+//!
 //! # Features
 //!
 //! - `std` (default): enables `color/std`.
@@ -75,13 +107,15 @@ compile_error!("openpbr requires either the `std` or `libm` feature");
 
 pub use color;
 
+mod linear_rgb;
 mod param;
 mod parameters;
 #[cfg(feature = "serde")]
 mod serde_impl;
 
+pub use linear_rgb::LinearRgb;
 pub use param::{Bound, Group, Kind, Param, ParamDefault, ParamInfo, Range, Unit, Value};
-pub use parameters::{Parameters, RangeError, SetError};
+pub use parameters::{Parameters, SetError, ValidationError};
 
 #[cfg(feature = "serde")]
 pub(crate) use serde_impl::color as serde_color;

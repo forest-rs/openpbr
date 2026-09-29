@@ -5,7 +5,7 @@ parameter set as plain, `no_std` Rust data.
 
 - `Parameters<CS>`: every constant parameter with the specification's
   defaults, range validation, dynamic access by `Param`, and conversion
-  between linear color spaces.
+  between linear RGB color spaces.
 - `Param` / `ParamInfo`: all 41 parameters of the specification's parameter
   reference, including the `vector3` geometry inputs, with identifier, label,
   group, type, allowed and typical ranges, default, unit, and whether the
@@ -15,6 +15,8 @@ Colors are [`color`](https://crates.io/crates/color) `OpaqueColor` values
 typed by their color space. OpenPBR assumes ACEScg unless a material says
 otherwise, so `Parameters` defaults to `Parameters<AcesCg>`; renderers working
 in linear Rec. 709 use `Parameters<LinearSrgb>` and `Parameters::convert`.
+The `LinearRgb` bound supports ACEScg, ACES2065-1, and linear sRGB, with
+documented requirements for custom spaces. Encoded RGB and XYZ are excluded.
 
 ```rust
 use openpbr::color::{AcesCg, LinearSrgb, OpaqueColor};
@@ -37,6 +39,29 @@ for param in Param::ALL {
 
 This crate implements OpenPBR 1.1.1. It evaluates no BSDF and reads or writes
 no file format; glTF, MaterialX, and renderer bindings belong in adapters.
+
+## Validation and color conversion
+
+`validate()` and `violations()` require finite numeric values and enforce
+specification ranges for scalars and non-color triples such as
+`subsurface_radius_scale`. Chromatic colors may contain negative values or
+values above one. For example, ACEScg red `[1, 0, 0]` converts to approximately
+`[1.705, -0.130, -0.024]` in linear sRGB and still passes ordinary validation.
+
+`validate_spec_ranges()` and `spec_range_violations()` additionally enforce
+the specification's color bounds in the current RGB space. That converted
+red fails the stricter check. Both checks reject NaN and infinities; neither
+enforces typical ("norm") ranges or promises renderer support.
+
+`ParamInfo` retains the exact OpenPBR 1.1.1 ranges. Conversion does not clip
+or gamut-map colors. The application owns any gamut policy needed before
+shading. Public fields, dynamic setters, and deserialization remain unchecked;
+call the appropriate validation method before use.
+
+Serde payloads contain no color-space identifier, specification version, or
+scene-unit scale. The containing format supplies these. Missing fields are
+default-filled, so this is a resolved parameter payload rather than a record
+of authored versus unauthored inputs.
 
 ## Features
 
