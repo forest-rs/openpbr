@@ -5,7 +5,9 @@
 
 use core::fmt;
 
-use color::{ColorSpace, OpaqueColor};
+use color::OpaqueColor;
+
+use crate::LinearRgb;
 
 /// One OpenPBR parameter.
 ///
@@ -249,18 +251,24 @@ impl Range {
         }
     }
 
-    /// Returns true when `value` lies in the interval. NaN never does.
+    /// Returns true when `value` is finite and lies in the interval.
+    ///
+    /// An unbounded interval admits arbitrarily large finite values, not
+    /// IEEE infinities. NaN is never in range.
     #[must_use]
     pub fn contains(self, value: f32) -> bool {
+        if !value.is_finite() {
+            return false;
+        }
         let above = match self.min {
             Bound::Inclusive(min) => value >= min,
             Bound::Exclusive(min) => value > min,
-            Bound::Unbounded => !value.is_nan(),
+            Bound::Unbounded => true,
         };
         let below = match self.max {
             Bound::Inclusive(max) => value <= max,
             Bound::Exclusive(max) => value < max,
-            Bound::Unbounded => !value.is_nan(),
+            Bound::Unbounded => true,
         };
         above && below
     }
@@ -297,9 +305,9 @@ pub enum Unit {
     Micrometers,
 }
 
-/// A constant parameter value, with colors in color space `CS`.
+/// A constant parameter value, with colors in linear RGB space `CS`.
 #[derive(Copy, Clone)]
-pub enum Value<CS: ColorSpace> {
+pub enum Value<CS: LinearRgb> {
     /// A `float` value.
     Float(f32),
     /// A `boolean` value.
@@ -312,7 +320,7 @@ pub enum Value<CS: ColorSpace> {
 }
 
 // Hand-written so `CS` needs no `Debug`; colors print as their components.
-impl<CS: ColorSpace> fmt::Debug for Value<CS> {
+impl<CS: LinearRgb> fmt::Debug for Value<CS> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Float(v) => f.debug_tuple("Float").field(v).finish(),
@@ -324,7 +332,7 @@ impl<CS: ColorSpace> fmt::Debug for Value<CS> {
 }
 
 // Hand-written so `CS` needs no `PartialEq`, as for `OpaqueColor`.
-impl<CS: ColorSpace> PartialEq for Value<CS> {
+impl<CS: LinearRgb> PartialEq for Value<CS> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Float(a), Self::Float(b)) => a == b,
@@ -377,8 +385,11 @@ pub struct ParamInfo {
     pub group: Group,
     /// The value type.
     pub kind: Kind,
-    /// The allowed values (per channel for colors); `None` for `boolean` and
-    /// `vector3` parameters.
+    /// The specification's allowed values (per channel for colors); `None`
+    /// for `boolean` and `vector3` parameters. These bounds are unchanged by
+    /// extended RGB storage: [`crate::Parameters::validate_spec_ranges`]
+    /// checks them for colors, while [`crate::Parameters::validate`] only
+    /// requires chromatic components to be finite.
     pub range: Option<Range>,
     /// The typically useful values when they differ from `range` (the
     /// specification's "Norm" column), for example `[1, 3]` for an IOR.
@@ -1018,7 +1029,9 @@ mod tests {
         assert!(POSITIVE.contains(f32::MIN_POSITIVE));
         assert!(!POSITIVE.contains(0.0));
         assert!(NON_NEGATIVE.contains(0.0));
-        assert!(NON_NEGATIVE.contains(f32::INFINITY));
+        assert!(!NON_NEGATIVE.contains(f32::INFINITY));
+        assert!(!NON_NEGATIVE.contains(f32::NEG_INFINITY));
+        assert!(NON_NEGATIVE.contains(f32::MAX));
         assert!(!NON_NEGATIVE.contains(-0.1));
         assert!(!UNIT.contains(f32::NAN));
         assert!(!NON_NEGATIVE.contains(f32::NAN));

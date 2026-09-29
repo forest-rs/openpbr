@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn parameters_use_identifiers_and_rgb_arrays() {
         let params = Parameters::<AcesCg> {
-            base_color: OpaqueColor::new([0.4, 0.02, 0.01]),
+            base_color: OpaqueColor::new([1.7, -0.13, -0.024]),
             coat_weight: 1.0,
             geometry_thin_walled: true,
             ..Parameters::DEFAULT
@@ -119,6 +119,29 @@ mod tests {
         }
         tokens.push(Token::StructEnd);
         assert_tokens(&params, &tokens);
+        assert_eq!(params.validate(), Ok(()));
+        assert!(params.validate_spec_ranges().is_err());
+    }
+
+    #[test]
+    fn deserialization_leaves_validation_explicit() {
+        let params = Parameters::<AcesCg> {
+            emission_luminance: f32::INFINITY,
+            ..Parameters::DEFAULT
+        };
+        assert_de_tokens(
+            &params,
+            &[
+                Token::Struct {
+                    name: "Parameters",
+                    len: 1,
+                },
+                Token::Str("emission_luminance"),
+                Token::F32(f32::INFINITY),
+                Token::StructEnd,
+            ],
+        );
+        assert!(params.validate().is_err());
     }
 
     #[test]

@@ -5,22 +5,19 @@
 
 use core::fmt;
 
-use color::{AcesCg, ColorSpace, OpaqueColor};
+use color::{AcesCg, OpaqueColor};
 
-use crate::{Kind, Param, Value};
+use crate::{Kind, LinearRgb, Param, Value};
 
 /// A complete set of constant OpenPBR parameter values, with colors in the
-/// linear color space `CS`.
+/// linear RGB color space `CS`.
 ///
 /// Field names are the specification's identifiers, so a field documents
 /// itself by its [`Param`]. `CS` defaults to [`AcesCg`], the space OpenPBR
 /// assumes when a material names none; renderers working in linear Rec. 709
 /// use `Parameters<LinearSrgb>` and [`Parameters::convert`] between the two.
-/// `CS` must be linear: using [`Parameters::DEFAULT`] or [`Default`] with a
-/// non-linear space such as `Srgb` fails to compile. The check is a constant
-/// assertion evaluated when the type is instantiated, so `cargo check` does
-/// not report it; `cargo build` and `cargo test` do, with the message
-/// "OpenPBR color parameters need a linear color space".
+/// `CS` must implement [`LinearRgb`]: encoded RGB and XYZ spaces are rejected
+/// by the type bound, including during `cargo check`.
 ///
 /// ```compile_fail
 /// let encoded = openpbr::Parameters::<openpbr::color::Srgb>::DEFAULT;
@@ -38,15 +35,22 @@ use crate::{Kind, Param, Value};
 /// textures, so they have no constant field here. [`Param`] still describes
 /// them.
 ///
+/// Numeric values must be finite for [`Self::validate`] to succeed. Chromatic
+/// colors may use extended RGB coordinates; only [`Self::validate_spec_ranges`]
+/// enforces their specification bounds. Scalars and non-color triples retain
+/// those bounds in both checks. Public fields and [`Self::set`] are unchecked.
+///
 /// [`Parameters::DEFAULT`] holds the specification's defaults: a gray,
 /// slightly glossy dielectric. With the `serde` feature, fields serialize
 /// under their identifiers and colors as `[r, g, b]` arrays; missing fields
-/// deserialize to their defaults, and unknown fields are an error, so a
-/// material from a later specification version is not silently reduced.
+/// deserialize to their defaults, and unknown fields are an error, so an
+/// unknown parameter is not silently discarded. Deserialization does not
+/// validate values. The containing format must supply the color space,
+/// specification version, and scene-unit scale; these are not in the payload.
 #[derive(Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default, deny_unknown_fields, bound = ""))]
-pub struct Parameters<CS: ColorSpace = AcesCg> {
+pub struct Parameters<CS: LinearRgb = AcesCg> {
     /// Base: scales the whole base substrate. Range `[0, 1]`, default 1.
     pub base_weight: f32,
     /// Base: diffuse albedo for dielectrics, normal-incidence reflectivity
@@ -145,8 +149,8 @@ pub struct Parameters<CS: ColorSpace = AcesCg> {
     /// Emission: luminance in nits (cd/m²). Range `[0, ∞)`, norm
     /// `[0, 1000]`, default 0.
     pub emission_luminance: f32,
-    /// Emission: color multiplier. Range `[0, ∞)` per channel, default
-    /// (1, 1, 1).
+    /// Emission: color multiplier. Specification range `[0, ∞)` per channel,
+    /// default (1, 1, 1). Extended finite RGB is accepted by [`Self::validate`].
     #[cfg_attr(feature = "serde", serde(with = "crate::serde_color"))]
     pub emission_color: OpaqueColor<CS>,
 
@@ -167,20 +171,9 @@ pub struct Parameters<CS: ColorSpace = AcesCg> {
     pub geometry_thin_walled: bool,
 }
 
-impl<CS: ColorSpace> Parameters<CS> {
-    const LINEAR: () = assert!(
-        CS::IS_LINEAR,
-        "OpenPBR color parameters need a linear color space"
-    );
-
+impl<CS: LinearRgb> Parameters<CS> {
     /// The specification's default parameters.
-    pub const DEFAULT: Self = {
-        // Evaluating the assertion rejects non-linear color spaces.
-        let () = Self::LINEAR;
-        Self::SPEC_DEFAULT
-    };
-
-    const SPEC_DEFAULT: Self = Self {
+    pub const DEFAULT: Self = Self {
         base_weight: 1.0,
         base_color: OpaqueColor::new([0.8; 3]),
         base_metalness: 0.0,
@@ -353,18 +346,35 @@ impl<CS: ColorSpace> Parameters<CS> {
         }
     }
 
-    /// Returns every value outside its parameter's range, in parameter
-    /// order and then channel order. NaN is never in range.
+    /// Returns every invalid value, in parameter order and then channel order.
     ///
-    /// Ranges are the specification's allowed values, not its "norm"
-    /// (typically useful) ranges: an IOR of 4 is valid.
-    pub fn violations(&self) -> impl Iterator<Item = RangeError> + '_ {
+    /// All numeric values must be finite. Chromatic colors may have negative
+    /// components or components above one. Scalars and non-color triples
+    /// must also satisfy the specification's allowed ranges, not its "norm"
+    /// (typically useful) ranges: an IOR of 4 is valid. Use
+    /// [`Self::spec_range_violations`] to check color bounds as well.
+    pub fn violations(&self) -> impl Iterator<Item = ValidationError> + '_ {
+        self.check_violations(false)
+    }
+
+    /// Returns every non-finite value or specification-range violation.
+    ///
+    /// Unlike [`Self::violations`], this also checks chromatic components
+    /// against [`crate::ParamInfo::range`] in the current RGB space. Results
+    /// are in parameter order and then channel order. Typical ("norm")
+    /// ranges are not enforced.
+    pub fn spec_range_violations(&self) -> impl Iterator<Item = ValidationError> + '_ {
+        self.check_violations(true)
+    }
+
+    fn check_violations(&self, spec_ranges: bool) -> impl Iterator<Item = ValidationError> + '_ {
         Param::ALL.into_iter().flat_map(move |param| {
             let mut found = [None; 3];
-            if let (Some(range), Some(value)) = (param.info().range, self.get(param)) {
+            let info = param.info();
+            if let (Some(range), Some(value)) = (info.range, self.get(param)) {
                 match value {
                     Value::Float(v) if !range.contains(v) => {
-                        found[0] = Some(RangeError {
+                        found[0] = Some(ValidationError {
                             param,
                             channel: None,
                             value: v,
@@ -372,8 +382,13 @@ impl<CS: ColorSpace> Parameters<CS> {
                     }
                     Value::Color(OpaqueColor { components: c, .. }) | Value::Channels(c) => {
                         for (channel, v) in (0_u8..).zip(c) {
-                            if !range.contains(v) {
-                                found[usize::from(channel)] = Some(RangeError {
+                            let valid = if info.color && !spec_ranges {
+                                v.is_finite()
+                            } else {
+                                range.contains(v)
+                            };
+                            if !valid {
+                                found[usize::from(channel)] = Some(ValidationError {
                                     param,
                                     channel: Some(channel),
                                     value: v,
@@ -388,22 +403,43 @@ impl<CS: ColorSpace> Parameters<CS> {
         })
     }
 
-    /// Checks every value against its parameter's range.
+    /// Checks that numeric values are finite and non-colors obey spec ranges.
+    ///
+    /// Chromatic colors retain extended RGB coordinates after conversion;
+    /// negative components and components above one are accepted. This does
+    /// not guarantee physical plausibility or renderer support. No values
+    /// are changed. Use [`Self::validate_spec_ranges`] for color bounds.
     ///
     /// # Errors
     ///
     /// Returns the first entry of [`Parameters::violations`].
-    pub fn validate(&self) -> Result<(), RangeError> {
+    pub fn validate(&self) -> Result<(), ValidationError> {
         self.violations().next().map_or(Ok(()), Err)
+    }
+
+    /// Checks finiteness and the specification's ranges, including colors.
+    ///
+    /// Color bounds apply in the current RGB space. A converted color can
+    /// pass [`Self::validate`] and fail this check without a conversion error.
+    /// This checks stored parameter bounds, not full shading conformance.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first entry of [`Self::spec_range_violations`].
+    pub fn validate_spec_ranges(&self) -> Result<(), ValidationError> {
+        self.spec_range_violations().next().map_or(Ok(()), Err)
     }
 
     /// Converts the color parameters ([`Param::COLORS`]) to color space `T`.
     ///
     /// Every other value, including `subsurface_radius_scale`, is copied
-    /// unchanged. Saturated colors can leave `[0, 1]` in a smaller gamut;
-    /// validate afterwards when that matters.
+    /// unchanged. No clipping or gamut mapping is performed. Saturated colors
+    /// can leave `[0, 1]` in a smaller gamut; finite extended components pass
+    /// [`Self::validate`] but may fail [`Self::validate_spec_ranges`]. Numerical
+    /// overflow can still produce non-finite components; validate the result
+    /// before use. The caller owns any gamut mapping required by a renderer.
     #[must_use]
-    pub fn convert<T: ColorSpace>(self) -> Parameters<T> {
+    pub fn convert<T: LinearRgb>(self) -> Parameters<T> {
         Parameters {
             base_weight: self.base_weight,
             base_color: self.base_color.convert(),
@@ -453,14 +489,14 @@ impl<CS: ColorSpace> Parameters<CS> {
     }
 }
 
-impl<CS: ColorSpace> Default for Parameters<CS> {
+impl<CS: LinearRgb> Default for Parameters<CS> {
     fn default() -> Self {
         Self::DEFAULT
     }
 }
 
 // Hand-written so `CS` needs no `Debug`; colors print as their components.
-impl<CS: ColorSpace> fmt::Debug for Parameters<CS> {
+impl<CS: LinearRgb> fmt::Debug for Parameters<CS> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Parameters")
             .field("base_weight", &self.base_weight)
@@ -523,7 +559,7 @@ impl<CS: ColorSpace> fmt::Debug for Parameters<CS> {
 }
 
 // Hand-written so `CS` needs no `PartialEq`, as for `OpaqueColor`.
-impl<CS: ColorSpace> PartialEq for Parameters<CS> {
+impl<CS: LinearRgb> PartialEq for Parameters<CS> {
     fn eq(&self, other: &Self) -> bool {
         self.base_weight == other.base_weight
             && self.base_color == other.base_color
@@ -565,7 +601,7 @@ impl<CS: ColorSpace> PartialEq for Parameters<CS> {
     }
 }
 
-enum Field<'a, CS: ColorSpace> {
+enum Field<'a, CS: LinearRgb> {
     Float(&'a mut f32),
     Color(&'a mut OpaqueColor<CS>),
     Channels(&'a mut [f32; 3]),
@@ -573,9 +609,14 @@ enum Field<'a, CS: ColorSpace> {
     None,
 }
 
-/// A parameter value outside the parameter's allowed range.
+/// A non-finite parameter value or a value outside the checked range.
+///
+/// [`Parameters::validate`] checks ranges only for non-colors;
+/// [`Parameters::validate_spec_ranges`] checks color ranges as well. Both
+/// reject non-finite values. [`Self::value`] distinguishes a non-finite
+/// failure from a finite range violation.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct RangeError {
+pub struct ValidationError {
     /// The parameter.
     pub param: Param,
     /// The color channel (0 = R, 1 = G, 2 = B), or `None` for a `float`.
@@ -584,25 +625,26 @@ pub struct RangeError {
     pub value: f32,
 }
 
-impl fmt::Display for RangeError {
+impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.param)?;
+        if let Some(channel) = self.channel {
+            write!(f, "[{channel}]")?;
+        }
+        write!(f, " = {}", self.value)?;
+        if !self.value.is_finite() {
+            return f.write_str(" is not finite");
+        }
         let range = self
             .param
             .info()
             .range
             .expect("only ranged parameters report range errors");
-        match self.channel {
-            Some(channel) => write!(
-                f,
-                "{}[{channel}] = {} is outside {range}",
-                self.param, self.value
-            ),
-            None => write!(f, "{} = {} is outside {range}", self.param, self.value),
-        }
+        write!(f, " is outside {range}")
     }
 }
 
-impl core::error::Error for RangeError {}
+impl core::error::Error for ValidationError {}
 
 /// Failure from [`Parameters::set`].
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -652,7 +694,7 @@ fn kind_name(param: Param) -> &'static str {
 mod tests {
     use alloc::vec::Vec;
 
-    use color::LinearSrgb;
+    use color::{ColorSpace, LinearSrgb};
 
     use super::*;
     use crate::ParamDefault;
@@ -690,8 +732,10 @@ mod tests {
         }
     }
 
+    impl LinearRgb for Plain {}
+
     #[test]
-    fn trait_impls_need_only_color_space() {
+    fn trait_impls_need_only_linear_rgb() {
         let p = Parameters::<Plain>::DEFAULT;
         assert_eq!(p, p);
         let text = alloc::format!("{p:?}");
@@ -784,21 +828,21 @@ mod tests {
             thin_film_ior: 5.0,
             ..Parameters::DEFAULT
         };
-        let found: Vec<_> = p.violations().collect();
+        let found: Vec<_> = p.spec_range_violations().collect();
         assert_eq!(
             found,
             [
-                RangeError {
+                ValidationError {
                     param: Param::BaseWeight,
                     channel: None,
                     value: 1.5
                 },
-                RangeError {
+                ValidationError {
                     param: Param::SpecularIor,
                     channel: None,
                     value: 0.0
                 },
-                RangeError {
+                ValidationError {
                     param: Param::EmissionColor,
                     channel: Some(1),
                     value: -1.0
@@ -806,6 +850,7 @@ mod tests {
             ][..],
             "unbounded weights, norm excesses and bright emission are valid"
         );
+        assert_eq!(p.violations().collect::<Vec<_>>(), found[..2]);
         // NaN compares unequal, so check it separately.
         let nan_only = Parameters::<AcesCg> {
             emission_color: OpaqueColor::new([1.0, 1.0, f32::NAN]),
@@ -845,5 +890,176 @@ mod tests {
         {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn conversion_transforms_every_color_and_preserves_every_non_color() {
+        fn check<S: LinearRgb, T: LinearRgb>() {
+            let mut original = Parameters::<S>::DEFAULT;
+            let mut scalar = 0.125;
+            for param in Param::ALL {
+                let value = match original.get(param) {
+                    Some(Value::Float(_)) => {
+                        let value = Value::Float(scalar);
+                        scalar += 0.015625;
+                        value
+                    }
+                    Some(Value::Boolean(_)) => Value::Boolean(true),
+                    Some(Value::Channels(_)) => Value::Channels([0.2, 0.4, 0.6]),
+                    _ => continue,
+                };
+                original.set(param, value).unwrap();
+            }
+            for (param, components) in Param::COLORS.into_iter().zip([
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.8, 0.1, 0.3],
+                [0.2, 0.6, 0.4],
+                [0.5, 0.3, 0.9],
+                [-0.1, 1.2, 0.4],
+                [1.5, 0.4, -0.2],
+            ]) {
+                original
+                    .set(param, Value::Color(OpaqueColor::new(components)))
+                    .unwrap();
+            }
+            assert_eq!(original.validate(), Ok(()));
+            let converted: Parameters<T> = original.convert();
+            assert_eq!(converted.validate(), Ok(()));
+            for param in Param::ALL {
+                match (original.get(param), converted.get(param)) {
+                    (Some(Value::Color(source)), Some(Value::Color(actual))) => {
+                        assert_eq!(
+                            actual.components,
+                            source.convert::<T>().components,
+                            "{param}"
+                        );
+                    }
+                    (Some(Value::Float(source)), Some(Value::Float(actual))) => {
+                        assert_eq!(actual, source, "{param}");
+                    }
+                    (Some(Value::Boolean(source)), Some(Value::Boolean(actual))) => {
+                        assert_eq!(actual, source, "{param}");
+                    }
+                    (Some(Value::Channels(source)), Some(Value::Channels(actual))) => {
+                        assert_eq!(actual, source, "{param}");
+                    }
+                    (None, None) => {}
+                    (source, actual) => panic!("{param} changed kind: {source:?} -> {actual:?}"),
+                }
+            }
+        }
+
+        check::<AcesCg, LinearSrgb>();
+        check::<LinearSrgb, AcesCg>();
+        check::<color::Aces2065_1, LinearSrgb>();
+        check::<LinearSrgb, color::Aces2065_1>();
+        check::<AcesCg, color::Aces2065_1>();
+        check::<color::Aces2065_1, AcesCg>();
+    }
+
+    #[test]
+    fn converted_wide_gamut_red_remains_valid() {
+        let original = Parameters::<AcesCg> {
+            base_color: OpaqueColor::new([1.0, 0.0, 0.0]),
+            ..Parameters::DEFAULT
+        };
+        let converted: Parameters<LinearSrgb> = original.convert();
+        assert!(converted.base_color.components[0] > 1.0);
+        assert!(converted.base_color.components[1] < 0.0);
+        assert_eq!(converted.validate(), Ok(()));
+        assert_eq!(original.validate_spec_ranges(), Ok(()));
+        let errors: Vec<_> = converted
+            .spec_range_violations()
+            .filter(|error| error.param == Param::BaseColor)
+            .collect();
+        assert_eq!(errors.len(), 3);
+        for (channel, error) in (0_u8..).zip(&errors) {
+            assert_eq!(error.channel, Some(channel));
+        }
+        assert_eq!(converted.validate_spec_ranges(), Err(errors[0]));
+        let back: Parameters<AcesCg> = converted.convert();
+        for (actual, expected) in back.base_color.components.into_iter().zip([1.0, 0.0, 0.0]) {
+            assert!((actual - expected).abs() < 1e-5, "{actual} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn validation_rejects_non_finite_numeric_values() {
+        for param in Param::ALL {
+            for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut p = Parameters::<AcesCg>::DEFAULT;
+                let value = match p.get(param) {
+                    Some(Value::Float(_)) => Value::Float(invalid),
+                    Some(Value::Color(_)) => Value::Color(OpaqueColor::new([invalid; 3])),
+                    Some(Value::Channels(_)) => Value::Channels([invalid; 3]),
+                    _ => continue,
+                };
+                p.set(param, value).unwrap();
+                assert!(p.validate().is_err(), "{param} accepted {invalid}");
+                assert!(
+                    p.validate_spec_ranges().is_err(),
+                    "{param} accepted {invalid}"
+                );
+                let errors: Vec<_> = p.violations().collect();
+                let expected_count = if matches!(value, Value::Float(_)) {
+                    1
+                } else {
+                    3
+                };
+                assert_eq!(errors.len(), expected_count, "{param}");
+                for error in errors {
+                    assert_eq!(error.param, param);
+                    assert!(!error.value.is_finite());
+                    assert!(alloc::format!("{error}").ends_with(" is not finite"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extended_colors_and_non_color_ranges_are_distinct() {
+        for param in Param::COLORS {
+            let mut p = Parameters::<AcesCg>::DEFAULT;
+            p.set(param, Value::Color(OpaqueColor::new([-0.25, 1.5, 0.5])))
+                .unwrap();
+            assert_eq!(p.validate(), Ok(()), "{param}");
+            assert_eq!(p.validate_spec_ranges().unwrap_err().param, param);
+        }
+        let p = Parameters::<AcesCg> {
+            specular_roughness: 1.5,
+            subsurface_radius_scale: [-0.25, 1.5, 0.5],
+            ..Parameters::DEFAULT
+        };
+        let errors: Vec<_> = p.violations().collect();
+        assert_eq!(errors.len(), 3);
+        assert_eq!(errors[0].param, Param::SpecularRoughness);
+        assert_eq!(errors[1].param, Param::SubsurfaceRadiusScale);
+        assert_eq!(errors[1].channel, Some(0));
+        assert_eq!(errors[2].param, Param::SubsurfaceRadiusScale);
+        assert_eq!(errors[2].channel, Some(1));
+        assert_eq!(errors, p.spec_range_violations().collect::<Vec<_>>());
+        let emission = Parameters::<AcesCg> {
+            emission_color: OpaqueColor::new([2.0, 3.0, 4.0]),
+            ..Parameters::DEFAULT
+        };
+        assert_eq!(emission.validate_spec_ranges(), Ok(()));
+    }
+
+    #[test]
+    fn supported_rgb_defaults_obey_the_specification() {
+        fn check<CS: LinearRgb>() {
+            let defaults = Parameters::<CS>::DEFAULT;
+            assert_eq!(defaults.validate(), Ok(()));
+            assert_eq!(defaults.validate_spec_ranges(), Ok(()));
+            assert_eq!(
+                defaults.specular_color.components,
+                OpaqueColor::<CS>::WHITE.components
+            );
+        }
+        check::<AcesCg>();
+        check::<color::Aces2065_1>();
+        check::<LinearSrgb>();
     }
 }
