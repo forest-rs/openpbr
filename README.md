@@ -2,7 +2,7 @@
 
 A small Rust workspace centered on [`crates/openpbr`](./crates/openpbr), a
 `no_std` crate describing the
-[OpenPBR Surface](https://academysoftwarefoundation.github.io/OpenPBR/)
+[OpenPBR Surface 1.1.1](https://github.com/AcademySoftwareFoundation/OpenPBR/tree/v1.1.1)
 parameter set: typed values with the specification's defaults, ranges,
 metadata for every parameter, and color-space-typed colors built on
 [`color`](https://crates.io/crates/color).

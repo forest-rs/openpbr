@@ -1,15 +1,37 @@
 # openpbr
 
-The [OpenPBR Surface](https://academysoftwarefoundation.github.io/OpenPBR/)
+The [OpenPBR Surface](https://github.com/AcademySoftwareFoundation/OpenPBR/tree/v1.1.1)
 parameter set as plain, `no_std` Rust data.
 
-- `Parameters<CS>`: every constant parameter with the specification's
+- `Parameters<CS>`: 37 constant inputs with the specification's
   defaults, range validation, dynamic access by `Param`, and conversion
   between linear RGB color spaces.
 - `Param` / `ParamInfo`: all 41 parameters of the specification's parameter
   reference, including the `vector3` geometry inputs, with identifier, label,
   group, type, allowed and typical ranges, default, unit, and whether the
   value is a color.
+
+The four `vector3` geometry inputs (`geometry_normal`, `geometry_tangent`,
+`geometry_coat_normal`, and `geometry_coat_tangent`) have metadata but are not
+stored in `Parameters`. The renderer or adapter supplies them.
+
+## Installation
+
+```toml
+[dependencies]
+openpbr = "0.1.0"
+```
+
+For `no_std` targets, disable the default `std` feature and enable `libm`:
+
+```toml
+[dependencies]
+openpbr = { version = "0.1.0", default-features = false, features = ["libm"] }
+```
+
+Add the `serde` feature when serialization is needed.
+
+## Usage
 
 Colors are [`color`](https://crates.io/crates/color) `OpaqueColor` values
 typed by their color space. OpenPBR assumes ACEScg unless a material says
@@ -37,7 +59,8 @@ for param in Param::ALL {
 }
 ```
 
-This crate implements OpenPBR 1.1.1. It evaluates no BSDF and reads or writes
+This crate implements the [OpenPBR 1.1.1 parameter reference](https://github.com/AcademySoftwareFoundation/OpenPBR/blob/f8d6d947dfae4c9b599965a86c22826ea7a8dbfb/parametrization.md.html).
+It evaluates no BSDF and reads or writes
 no file format; glTF, MaterialX, and renderer bindings belong in adapters.
 
 ## Validation and color conversion
